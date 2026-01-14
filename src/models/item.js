@@ -125,6 +125,27 @@ const Item = {
       final_price: finalPrice.toFixed(2), // "2110.00"
     };
   },
+  async getAvailability(itemId, date = null) {
+    const query = db
+      .from("availability_slots")
+      .select("id, start_time, end_time, capacity, is_booked, created_at")
+      .eq("item_id", itemId)
+      .order("start_time");
+
+    if (date) query.eq("date", date);
+
+    const { data, error } = await query;
+    if (error) return { error: error.message };
+
+    // Transform for frontend
+    return data.map((slot) => ({
+      id: slot.id,
+      slot: `${slot.start_time.slice(0, 5)}-${slot.end_time.slice(0, 5)}`,
+      available: !slot.is_booked && slot.capacity > 0,
+      capacity_left: slot.capacity,
+      date: date || null,
+    }));
+  },
 };
 
 module.exports = Item;
