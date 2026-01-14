@@ -2,6 +2,7 @@ const express = require("express");
 const db = require("./config/db");
 const app = express();
 const Restaurant = require("./models/restaurant");
+const Category = require("./models/category");
 
 app.use(express.json());
 
@@ -33,6 +34,26 @@ app.get("/restaurants", async (req, res) => {
   const { data, error } = await Restaurant.list({ page, limit });
   if (error) return res.status(400).json({ error: error.message });
 
+  res.json({ page, limit, data });
+});
+
+// POST /categories
+app.post("/categories", async (req, res) => {
+  const { data, error } = await Category.create(req.body);
+  if (error && !error.data) {
+    return res.status(400).json({ error: error.message });
+  }
+  res.status(201).json(data);
+});
+
+// GET /categories?restaurant_id=...
+app.get("/categories", async (req, res) => {
+  const restaurant_id = req.query.restaurant_id;
+  const page = parseInt(req.query.page || "1", 10);
+  const limit = parseInt(req.query.limit || "10", 10);
+
+  const { data, error } = await Category.list({ restaurant_id, page, limit });
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ page, limit, data });
 });
 
