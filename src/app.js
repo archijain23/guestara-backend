@@ -78,5 +78,12 @@ app.get("/items", async (req, res) => {
   res.json({ page, limit, data });
 });
 
+app.get("/items/:id/tax", async (req, res) => {
+  console.log("🌐 Route hit:", req.params.id);
+  const result = await Item.getEffectiveTax(req.params.id);
+  console.log("📤 Returning:", result);
+  res.json(result || { error: "No data" });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server on ${PORT}`));

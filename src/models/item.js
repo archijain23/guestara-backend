@@ -42,6 +42,32 @@ const Item = {
     const { data, error } = await query;
     return { data, error };
   },
+
+  async getEffectiveTax(itemId) {
+    const { data: item } = await db
+      .from("items")
+      .select("subcategory_id")
+      .eq("id", itemId)
+      .single();
+    if (!item) return { tax_applicable: false, tax_percentage: 0 };
+
+    const { data: subcat } = await db
+      .from("subcategories")
+      .select("parent_id, tax_applicable, tax_percentage")
+      .eq("id", item.subcategory_id)
+      .single();
+    const { data: cat } = await db
+      .from("categories")
+      .select("tax_applicable, tax_percentage")
+      .eq("id", subcat.parent_id)
+      .single();
+
+    const taxApplicable =
+      cat?.tax_applicable || subcat?.tax_applicable || false;
+    const taxPercentage = cat?.tax_percentage || subcat?.tax_percentage || 0;
+
+    return { tax_applicable: taxApplicable, tax_percentage: taxPercentage };
+  },
 };
 
 module.exports = Item;
