@@ -3,6 +3,7 @@ const db = require("./config/db");
 const app = express();
 const Restaurant = require("./models/restaurant");
 const Category = require("./models/category");
+const Item = require("./models/item");
 
 app.use(express.json());
 
@@ -53,6 +54,26 @@ app.get("/categories", async (req, res) => {
   const limit = parseInt(req.query.limit || "10", 10);
 
   const { data, error } = await Category.list({ restaurant_id, page, limit });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ page, limit, data });
+});
+
+// POST /items (create item with pricing_rules)
+app.post("/items", async (req, res) => {
+  const { data, error } = await Item.create(req.body);
+  if (error && !error.data) {
+    return res.status(400).json({ error: error.message });
+  }
+  res.status(201).json(data);
+});
+
+// GET /items?subcategory_id=... (pagination)
+app.get("/items", async (req, res) => {
+  const subcategory_id = req.query.subcategory_id;
+  const page = parseInt(req.query.page || "1", 10);
+  const limit = parseInt(req.query.limit || "10", 10);
+
+  const { data, error } = await Item.list({ subcategory_id, page, limit });
   if (error) return res.status(400).json({ error: error.message });
   res.json({ page, limit, data });
 });
