@@ -4,6 +4,7 @@ const app = express();
 const Restaurant = require("./models/restaurant");
 const Category = require("./models/category");
 const Item = require("./models/item");
+const Subcategory = require("./models/subcategory");
 
 app.use(express.json());
 
@@ -120,6 +121,42 @@ app.get("/items/search", async (req, res) => {
   const result = await Item.searchItems(req.query);
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
+});
+
+// Category update route
+app.put("/categories/:id", async (req, res) => {
+  const { data, error } = await Category.update(req.params.id, req.body);
+  if (error) {
+    return res.status(400).json({ error });
+  }
+  res.json(data);
+});
+
+// Subcategory routes
+app.post("/subcategories", async (req, res) => {
+  const { data, error } = await Subcategory.create(req.body);
+  if (error && !error.data) {
+    return res.status(400).json({ error: error.message });
+  }
+  res.status(201).json(data);
+});
+
+app.get("/subcategories", async (req, res) => {
+  const category_id = req.query.category_id;
+  const page = parseInt(req.query.page || "1", 10);
+  const limit = parseInt(req.query.limit || "10", 10);
+
+  const { data, error } = await Subcategory.list({ category_id, page, limit });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ page, limit, data });
+});
+
+app.put("/subcategories/:id", async (req, res) => {
+  const { data, error } = await Subcategory.update(req.params.id, req.body);
+  if (error) {
+    return res.status(400).json({ error });
+  }
+  res.json(data);
 });
 
 const PORT = process.env.PORT || 3000;

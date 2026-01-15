@@ -1,9 +1,7 @@
 const db = require("../config/db");
 
 const Category = {
-  // POST /categories
   async create(payload) {
-    // Business rule validation
     if (payload.tax_applicable && !payload.tax_percentage) {
       return {
         error: {
@@ -21,7 +19,30 @@ const Category = {
     return { data, error };
   },
 
-  // GET /categories?restaurant_id=...
+  // ✅ NEW: Update category
+  async update(id, payload) {
+    if (payload.tax_applicable && !payload.tax_percentage) {
+      return {
+        error: {
+          message: "tax_percentage required when tax_applicable is true",
+        },
+      };
+    }
+
+    const { data, error } = await db
+      .from("categories")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      return { error: error.message };
+    }
+
+    return { data };
+  },
+
   async list({ restaurant_id, page = 1, limit = 10 } = {}) {
     const from = (page - 1) * limit;
     const to = from + limit - 1;
@@ -33,7 +54,6 @@ const Category = {
       .order("name", { ascending: true })
       .range(from, to);
 
-    // Filter by restaurant (required by spec)
     if (restaurant_id) {
       query = query.eq("restaurant_id", restaurant_id);
     }
