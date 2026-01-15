@@ -146,6 +146,83 @@ const Item = {
       date: date || null,
     }));
   },
+  async getAddons(itemId) {
+    const { data, error } = await db
+      .from("item_addons")
+      .select("id, name, description, price, max_quantity, is_active")
+      .eq("item_id", itemId)
+      .eq("is_active", true)
+      .order("price");
+
+    if (error) return { error: error.message };
+
+    return data.map((addon) => ({
+      id: addon.id,
+      name: addon.name,
+      description: addon.description || null,
+      price: addon.price.toFixed(2), // "500.00"
+      max_quantity: addon.max_quantity,
+    }));
+  },
+  async searchItems(params = {}) {
+    const {
+      search,
+      min_price,
+      max_price,
+      subcategory_id,
+      page = 1,
+      limit = 10,
+    } = params;
+
+    let query = `
+    SELECT id, name, description, image, pricing_type, pricing_rules, subcategory_id, created_at
+    FROM items 
+    WHERE is_active = true
+  `;
+
+    const conditions = [];
+    const paramsArray = [];
+    let paramIndex = 1;
+
+    if (search) {
+      conditions.push(
+        `name ILIKE $${paramIndex} OR description ILIKE $${paramIndex + 1}`
+      );
+      paramsArray.push(`%${search}%`, `%${search}%`);
+      paramIndex += 2;
+    }
+
+    if (subcategory_id) {
+      conditions.push(`subcategory_id = $${paramIndex}`);
+      paramsArray.push(subcategory_id);
+      paramIndex += 1;
+    }
+
+    if (min_price || max_price) {
+      conditions.push(
+        `(pricing_rules->>'base_price')::numeric BETWEEN COALESCE($${paramIndex}, 0) AND COALESCE($${
+          paramIndex + 1
+        }, 999999)`
+      );
+      paramsArray.push(min_price || null, max_price || null);
+      paramIndex += 2;
+    }
+
+    if (conditions.length) query += " AND " + conditions.join(" AND ");
+
+    query += ` ORDER BY name LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    paramsArray.push(limit, (page - 1) * limit);
+
+    const { data: items, error } = await db.rpc("execute_sql", {
+      sql: query,
+      params: paramsArray,
+    });
+
+    if (error) return { error: error.message };
+
+    // Simple count (no pagination info for now)
+    return { items };
+  },
 };
 
 module.exports = Item;

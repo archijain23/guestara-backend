@@ -102,6 +102,16 @@ app.get("/items/:id/availability", async (req, res) => {
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
 });
+app.get("/items/:id/addons", async (req, res) => {
+  const result = await Item.getAddons(req.params.id);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
+app.get("/items", async (req, res) => {
+  const result = await Item.searchItems(req.query); // FIXED
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
