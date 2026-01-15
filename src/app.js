@@ -66,6 +66,14 @@ app.post("/items", async (req, res) => {
   }
   res.status(201).json(data);
 });
+// Update item
+app.put("/items/:id", async (req, res) => {
+  const { data, error } = await Item.update(req.params.id, req.body);
+  if (error) {
+    return res.status(400).json({ error });
+  }
+  res.json(data);
+});
 
 // GET /items?subcategory_id=... (pagination)
 app.get("/items", async (req, res) => {
@@ -107,8 +115,9 @@ app.get("/items/:id/addons", async (req, res) => {
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
 });
-app.get("/items", async (req, res) => {
-  const result = await Item.searchItems(req.query); // FIXED
+// REPLACE the duplicate GET /items route with this:
+app.get("/items/search", async (req, res) => {
+  const result = await Item.searchItems(req.query);
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
 });

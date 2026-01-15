@@ -2,7 +2,6 @@ const db = require("../config/db");
 
 const Item = {
   async create(payload) {
-    // Validate pricing_type enum
     const validTypes = [
       "static",
       "tiered",
@@ -24,6 +23,38 @@ const Item = {
       .select()
       .single();
     return { data, error };
+  },
+  async update(id, payload) {
+    // Validate pricing_type if provided
+    if (payload.pricing_type) {
+      const validTypes = [
+        "static",
+        "tiered",
+        "complimentary",
+        "discounted",
+        "dynamic",
+      ];
+      if (!validTypes.includes(payload.pricing_type)) {
+        return {
+          error: {
+            message: `pricing_type must be one of: ${validTypes.join(", ")}`,
+          },
+        };
+      }
+    }
+
+    const { data, error } = await db
+      .from("items")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      return { error: error.message };
+    }
+
+    return { data };
   },
 
   async list({ subcategory_id, page = 1, limit = 10 } = {}) {
@@ -69,7 +100,6 @@ const Item = {
     return { tax_applicable: taxApplicable, tax_percentage: taxPercentage };
   },
 
-  // ADD after getEffectiveTax
   async calculatePrice(itemId, requestParams = {}) {
     const { data: item } = await db
       .from("items")
@@ -117,14 +147,15 @@ const Item = {
       pricing_type: item.pricing_type,
       applied_rule: appliedRule,
       request_params: requestParams,
-      base_price: basePrice.toFixed(2), // "2000.00"
-      subtotal: subtotal.toFixed(2), // "2000.00"
+      base_price: basePrice.toFixed(2),
+      subtotal: subtotal.toFixed(2),
       tax_applicable: tax.tax_applicable,
       tax_percentage: tax.tax_percentage,
-      tax_amount: taxAmount.toFixed(2), // "110.00"
-      final_price: finalPrice.toFixed(2), // "2110.00"
+      tax_amount: taxAmount.toFixed(2),
+      final_price: finalPrice.toFixed(2),
     };
   },
+
   async getAvailability(itemId, date = null) {
     const query = db
       .from("availability_slots")
@@ -137,7 +168,6 @@ const Item = {
     const { data, error } = await query;
     if (error) return { error: error.message };
 
-    // Transform for frontend
     return data.map((slot) => ({
       id: slot.id,
       slot: `${slot.start_time.slice(0, 5)}-${slot.end_time.slice(0, 5)}`,
@@ -146,6 +176,7 @@ const Item = {
       date: date || null,
     }));
   },
+
   async getAddons(itemId) {
     const { data, error } = await db
       .from("item_addons")
@@ -160,68 +191,99 @@ const Item = {
       id: addon.id,
       name: addon.name,
       description: addon.description || null,
-      price: addon.price.toFixed(2), // "500.00"
+      price: addon.price.toFixed(2),
       max_quantity: addon.max_quantity,
     }));
   },
+
+  // ✅ OPTIMIZED: Checkpoint 9 - Search & Filter (no relation names)
   async searchItems(params = {}) {
     const {
       search,
       min_price,
       max_price,
       subcategory_id,
+      active_only = true,
+      sort_by = "name",
+      sort_order = "asc",
       page = 1,
       limit = 10,
     } = params;
 
-    let query = `
-    SELECT id, name, description, image, pricing_type, pricing_rules, subcategory_id, created_at
-    FROM items 
-    WHERE is_active = true
-  `;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
 
-    const conditions = [];
-    const paramsArray = [];
-    let paramIndex = 1;
+    // Build query
+    let query = db.from("items").select("*");
 
+    // Active filter
+    if (active_only === true || active_only === "true") {
+      query = query.eq("is_active", true);
+    }
+
+    // Text search (name or description)
     if (search) {
-      conditions.push(
-        `name ILIKE $${paramIndex} OR description ILIKE $${paramIndex + 1}`
-      );
-      paramsArray.push(`%${search}%`, `%${search}%`);
-      paramIndex += 2;
+      query = query.or(`name.ilike.%${search}%,description.ilike.%${search}%`);
     }
 
+    // Subcategory filter
     if (subcategory_id) {
-      conditions.push(`subcategory_id = $${paramIndex}`);
-      paramsArray.push(subcategory_id);
-      paramIndex += 1;
+      query = query.eq("subcategory_id", subcategory_id);
     }
 
-    if (min_price || max_price) {
-      conditions.push(
-        `(pricing_rules->>'base_price')::numeric BETWEEN COALESCE($${paramIndex}, 0) AND COALESCE($${
-          paramIndex + 1
-        }, 999999)`
-      );
-      paramsArray.push(min_price || null, max_price || null);
-      paramIndex += 2;
+    // Sorting
+    const validSortFields = ["name", "created_at"];
+    const sortField = validSortFields.includes(sort_by) ? sort_by : "name";
+    const ascending = sort_order === "asc";
+    query = query.order(sortField, { ascending });
+
+    // Pagination
+    query = query.range(from, to);
+
+    const { data: items, error } = await query;
+
+    if (error) {
+      return { error: error.message };
     }
 
-    if (conditions.length) query += " AND " + conditions.join(" AND ");
+    // Post-process: Price filtering
+    let filteredItems = items || [];
 
-    query += ` ORDER BY name LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-    paramsArray.push(limit, (page - 1) * limit);
+    if (min_price !== undefined || max_price !== undefined) {
+      filteredItems = filteredItems.filter((item) => {
+        const basePrice = item.pricing_rules?.base_price;
+        if (basePrice === null || basePrice === undefined) return false;
 
-    const { data: items, error } = await db.rpc("execute_sql", {
-      sql: query,
-      params: paramsArray,
-    });
+        const price = parseFloat(basePrice);
+        const min = min_price ? parseFloat(min_price) : 0;
+        const max = max_price ? parseFloat(max_price) : Infinity;
 
-    if (error) return { error: error.message };
+        return price >= min && price <= max;
+      });
+    }
 
-    // Simple count (no pagination info for now)
-    return { items };
+    // Format response (simplified without relation names)
+    const formattedItems = filteredItems.map((item) => ({
+      id: item.id,
+      name: item.name,
+      description: item.description,
+      image: item.image,
+      pricing_type: item.pricing_type,
+      base_price: item.pricing_rules?.base_price || null,
+      subcategory_id: item.subcategory_id,
+      is_active: item.is_active,
+      created_at: item.created_at,
+    }));
+
+    return {
+      data: formattedItems,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: formattedItems.length,
+        has_more: formattedItems.length === limit,
+      },
+    };
   },
 };
 
