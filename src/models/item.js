@@ -440,6 +440,7 @@ const Item = {
       subcategory_id,
       category_id,
       active_only = true,
+      tax_applicable,
       sort_by = "name",
       sort_order = "asc",
       page = 1,
@@ -552,6 +553,7 @@ const Item = {
       filteredItems = validItems;
     }
 
+    // Filter by price range
     if (min_price !== undefined || max_price !== undefined) {
       filteredItems = filteredItems.filter((item) => {
         const basePrice = item.pricing_rules?.base_price;
@@ -563,6 +565,26 @@ const Item = {
 
         return price >= min && price <= max;
       });
+    }
+
+    // Filter by tax_applicable (if specified)
+    if (tax_applicable !== undefined) {
+      const taxFilter = tax_applicable === "true" || tax_applicable === true;
+      
+      // Filter items based on their tax status
+      const itemsWithTaxInfo = await Promise.all(
+        filteredItems.map(async (item) => {
+          const tax = await this.getEffectiveTax(item.id);
+          return {
+            ...item,
+            has_tax: tax.tax_applicable,
+          };
+        })
+      );
+
+      filteredItems = itemsWithTaxInfo.filter(
+        (item) => item.has_tax === taxFilter
+      );
     }
 
     const formattedItems = filteredItems.map((item) => ({
