@@ -128,11 +128,27 @@ app.post("/slots/:slot_id/book", async (req, res) => {
   res.json(result);
 });
 
+// Get add-ons for an item
 app.get("/items/:id/addons", async (req, res) => {
   const result = await Item.getAddons(req.params.id);
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
 });
+
+// Create add-on for an item
+app.post("/items/:id/addons", async (req, res) => {
+  const result = await Item.createAddon(req.params.id, req.body);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.status(201).json(result.data);
+});
+
+// Calculate price with add-ons
+app.post("/items/:id/price-with-addons", async (req, res) => {
+  const result = await Item.calculatePriceWithAddons(req.params.id, req.body);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
+
 // REPLACE the duplicate GET /items route with this:
 app.get("/items/search", async (req, res) => {
   const result = await Item.searchItems(req.query);
