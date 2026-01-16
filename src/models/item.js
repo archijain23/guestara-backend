@@ -447,9 +447,6 @@ const Item = {
       limit = 10,
     } = params;
 
-    const from = (page - 1) * limit;
-    const to = from + limit - 1;
-
     let query = db.from("items").select("*");
 
     if (active_only === true || active_only === "true") {
@@ -471,8 +468,7 @@ const Item = {
     const ascending = sort_order === "asc";
     query = query.order(sortField, { ascending });
 
-    query = query.range(from, to);
-
+    // Don't paginate yet - we need to filter first
     const { data: items, error } = await query;
 
     if (error) {
@@ -587,7 +583,12 @@ const Item = {
       );
     }
 
-    const formattedItems = filteredItems.map((item) => ({
+    // Now paginate the filtered results
+    const from = (page - 1) * limit;
+    const to = from + limit;
+    const paginatedItems = filteredItems.slice(from, to);
+
+    const formattedItems = paginatedItems.map((item) => ({
       id: item.id,
       name: item.name,
       description: item.description,
@@ -605,8 +606,8 @@ const Item = {
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
-        total: formattedItems.length,
-        has_more: formattedItems.length === limit,
+        total: filteredItems.length,
+        has_more: to < filteredItems.length,
       },
     };
   },
