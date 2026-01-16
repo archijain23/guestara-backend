@@ -46,7 +46,7 @@ Restaurant → Category → Item (direct)
 Restaurant → Category → Subcategory → Item
 ```
 
-**Important Design Decision:** Items can belong to **EITHER** a category **OR** a subcategory, but not both. This gives maximum flexibility:
+**Important Requirement from Assignment:** Items must belong to **EITHER** a category **OR** a subcategory, but not both. This gives restaurants flexibility in organizing their menus:
 - Simple items (like "Water") can go directly under a category
 - Complex items (like "Premium Wines") can be organized under subcategories
 
@@ -97,7 +97,7 @@ id, category_id, subcategory_id, name, description, image,
 pricing_type, pricing_rules (JSONB), is_active, created_at
 ```
 
-**Key constraint:** Items must have EITHER `category_id` OR `subcategory_id` set, but not both.
+**Key constraint (from assignment spec):** Items must have EITHER `category_id` OR `subcategory_id` set, but not both.
 
 The interesting bit is `pricing_rules` being JSONB. I did this because different pricing types need different data:
 
@@ -122,15 +122,11 @@ id, item_id, name, description, price, max_quantity, is_active, created_at
 
 ### Design Choices Worth Mentioning
 
-#### Why flexible item parents (category OR subcategory)?
+#### How I implemented the flexible item parent requirement
 
-Initially, I implemented a rigid hierarchy where items could only belong to subcategories. But the assignment specifically required items to belong to **either** a category **or** a subcategory.
+The assignment specified that items should belong to either a category or a subcategory, not both. Initially, I misread this and implemented a rigid 3-level hierarchy (items only under subcategories). After re-reading the spec, I refactored to support both paths.
 
-This flexibility is important because:
-- Not all menu items need deep categorization
-- Some restaurants have simple structures (just categories + items)
-- Others need detailed organization (categories → subcategories → items)
-- It mirrors how real restaurant menus work
+**Implementation approach:**
 
 The database enforces this with a `CHECK` constraint:
 ```sql
@@ -140,7 +136,13 @@ CHECK (
 )
 ```
 
-The application layer also validates this before insertion to provide clear error messages.
+The application layer also validates this before insertion to provide clear error messages to API users.
+
+**Why this requirement makes sense:**
+- Not all menu items need deep categorization
+- Some restaurants have simple structures (just categories + items)
+- Others need detailed organization (categories → subcategories → items)
+- It mirrors how real restaurant menus work in practice
 
 #### Why `is_active` instead of deleting?
 
@@ -361,7 +363,7 @@ The API returns a full breakdown:
 ✅ Full CRUD for restaurants, categories, subcategories, items  
 ✅ All 5 pricing types working  
 ✅ Tax inheritance with proper fallback  
-✅ Flexible item parents (category OR subcategory)  
+✅ Flexible item parents (category OR subcategory) as per assignment spec  
 ✅ Pagination on list endpoints  
 ✅ Availability checking  
 ✅ Add-ons system  
@@ -691,41 +693,31 @@ Initially thought "just check if parent has tax" but then ran into questions:
 
 I ended up adding the `inherited_from` field to the response, which made debugging way easier.
 
-#### 3. Flexible hierarchies require careful validation
-When I refactored from "items only under subcategories" to "items under categories OR subcategories", I realized:
-- Database constraints alone aren't enough (error messages are cryptic)
-- Application-level validation gives better UX
-- But you still need both layers for data integrity
+#### 3. Reading requirements carefully matters
+I initially implemented items to only belong to subcategories, creating a rigid 3-level hierarchy. After re-reading the assignment spec ("Item can belong to: Either a category OR a subcategory. But not both"), I realized my mistake and refactored.
 
-The combination of a CHECK constraint in Postgres plus validation in item.js provides the best protection.
+**The lesson:** When implementing specs, double-check edge cases and requirements. The refactor involved:
+- Adding `category_id` column to items table
+- Adding CHECK constraint for mutual exclusivity
+- Updating tax inheritance logic to handle both parent types
+- Updating list/search endpoints to filter by either parent
+
+Both database constraints and application-level validation are needed for good data integrity and user experience.
 
 ### Hardest Challenge
 
-#### Understanding the true requirement for item parents
+#### Making dynamic pricing actually useful
 
-Initially, I misread the assignment and implemented a rigid 3-level hierarchy where every item needed a subcategory. This seemed logical but didn't match the spec.
+The assignment said "implement dynamic pricing" but left the details vague (intentionally, I think). I had to decide:
 
-The assignment clearly stated: "Item can belong to: Either a category OR a subcategory. But not both."
+- What if time windows overlap? (decided: first match wins)
+- What if current time doesn't match any window? (decided: return error, don't silently use base price)
+- How to handle timezone differences? (decided: assume everything is local time, HH:MM format)
+- Should windows cross midnight? (decided: yes, but didn't fully implement)
 
-Refactoring this taught me:
+The hard part wasn't the code—it was making design decisions without clear requirements. I ended up choosing the simplest approach that would be extensible later (storing time windows as an array means I can add day-of-week or date-specific pricing without schema changes).
 
-**The technical part was straightforward:**
-- Add `category_id` column to items
-- Add CHECK constraint for single parent
-- Update tax inheritance logic to handle both cases
-- Update list/search to filter by either parent type
-
-**The hard part was the design thinking:**
-- Why would you want items directly under categories?
-- When does it make sense to skip subcategories?
-- How does this affect the UI/UX for restaurant managers?
-
-I realized this flexibility mirrors real restaurant menus:
-- Simple items ("Water") don't need subcategories
-- Complex sections ("Wine List") benefit from subcategorization
-- Different restaurants have different organizational needs
-
-**What I learned:** When specs seem ambiguous, look for real-world use cases. The "category OR subcategory" requirement makes perfect sense when you think about actual restaurant menus.
+**What I learned:** When specs are ambiguous, pick something reasonable, document your assumptions, and design for future changes.
 
 ### What I'd Improve With More Time
 
@@ -785,7 +777,7 @@ This was a fun project. The core challenge wasn't building CRUD endpoints—it w
 
 - Multiple pricing models without turning into spaghetti code
 - Tax inheritance that actually makes sense
-- Flexible organization (category OR subcategory parents)
+- Flexible item organization (category OR subcategory parents per assignment spec)
 - A flexible schema that can evolve without breaking things
 
 I tried to balance "good enough to demonstrate thinking" with "not over-engineered." Hope this README shows that I can both write code and explain why I made the choices I did.
