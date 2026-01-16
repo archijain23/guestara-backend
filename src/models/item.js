@@ -415,11 +415,85 @@ const Item = {
     return { tax_applicable: false, tax_percentage: 0 };
   },
 
+  // Create availability slots for an item
+  async createAvailabilitySlot(itemId, slotData) {
+    const { date, start_time, end_time, capacity = 1 } = slotData;
+
+    if (!date || !start_time || !end_time) {
+      return { error: "date, start_time, and end_time are required" };
+    }
+
+    // Validate time format (HH:MM)
+    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+    if (!timeRegex.test(start_time) || !timeRegex.test(end_time)) {
+      return { error: "Invalid time format. Use HH:MM (e.g., 09:00, 14:30)" };
+    }
+
+    // Check for time conflicts
+    const { data: existingSlots } = await db
+      .from("availability_slots")
+      .select("*")
+      .eq("item_id", itemId)
+      .eq("date", date);
+
+    if (existingSlots && existingSlots.length > 0) {
+      for (const slot of existingSlots) {
+        const existingStart = slot.start_time.slice(0, 5);
+        const existingEnd = slot.end_time.slice(0, 5);
+
+        // Check if new slot overlaps with existing slot
+        const hasConflict =
+          (start_time >= existingStart && start_time < existingEnd) ||
+          (end_time > existingStart && end_time <= existingEnd) ||
+          (start_time <= existingStart && end_time >= existingEnd);
+
+        if (hasConflict) {
+          return {
+            error: `Time conflict with existing slot: ${existingStart}-${existingEnd}`,
+            existing_slot: {
+              id: slot.id,
+              time: `${existingStart}-${existingEnd}`,
+            },
+          };
+        }
+      }
+    }
+
+    // Create the slot
+    const { data, error } = await db
+      .from("availability_slots")
+      .insert([
+        {
+          item_id: itemId,
+          date,
+          start_time,
+          end_time,
+          capacity,
+          is_booked: false,
+        },
+      ])
+      .select()
+      .single();
+
+    if (error) return { error: error.message };
+
+    return {
+      data: {
+        id: data.id,
+        date: data.date,
+        slot: `${data.start_time.slice(0, 5)}-${data.end_time.slice(0, 5)}`,
+        capacity: data.capacity,
+        is_booked: data.is_booked,
+      },
+    };
+  },
+
   async getAvailability(itemId, date = null) {
     const query = db
       .from("availability_slots")
-      .select("id, start_time, end_time, capacity, is_booked, created_at")
+      .select("id, date, start_time, end_time, capacity, is_booked, created_at")
       .eq("item_id", itemId)
+      .order("date")
       .order("start_time");
 
     if (date) query.eq("date", date);
@@ -429,11 +503,77 @@ const Item = {
 
     return data.map((slot) => ({
       id: slot.id,
+      date: slot.date,
       slot: `${slot.start_time.slice(0, 5)}-${slot.end_time.slice(0, 5)}`,
       available: !slot.is_booked && slot.capacity > 0,
       capacity_left: slot.capacity,
-      date: date || null,
     }));
+  },
+
+  // Book a slot
+  async bookSlot(slotId) {
+    // First, check if slot exists and is available
+    const { data: slot, error: fetchError } = await db
+      .from("availability_slots")
+      .select("*")
+      .eq("id", slotId)
+      .single();
+
+    if (fetchError) {
+      return { error: "Slot not found" };
+    }
+
+    // Prevent double booking
+    if (slot.is_booked) {
+      return {
+        error: "This slot is already booked",
+        slot: {
+          id: slot.id,
+          date: slot.date,
+          time: `${slot.start_time.slice(0, 5)}-${slot.end_time.slice(0, 5)}`,
+          status: "booked",
+        },
+      };
+    }
+
+    // Check capacity
+    if (slot.capacity <= 0) {
+      return {
+        error: "No capacity left for this slot",
+        slot: {
+          id: slot.id,
+          date: slot.date,
+          time: `${slot.start_time.slice(0, 5)}-${slot.end_time.slice(0, 5)}`,
+          capacity_left: 0,
+        },
+      };
+    }
+
+    // Book the slot (set is_booked = true, reduce capacity)
+    const { data: updated, error: updateError } = await db
+      .from("availability_slots")
+      .update({
+        is_booked: true,
+        capacity: slot.capacity - 1,
+      })
+      .eq("id", slotId)
+      .select()
+      .single();
+
+    if (updateError) {
+      return { error: "Failed to book slot: " + updateError.message };
+    }
+
+    return {
+      success: true,
+      booking: {
+        slot_id: updated.id,
+        date: updated.date,
+        time: `${updated.start_time.slice(0, 5)}-${updated.end_time.slice(0, 5)}`,
+        status: "booked",
+        capacity_left: updated.capacity,
+      },
+    };
   },
 
   async getAddons(itemId) {
