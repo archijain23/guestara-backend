@@ -576,10 +576,11 @@ const Item = {
     };
   },
 
+  // Get all add-ons for an item
   async getAddons(itemId) {
     const { data, error } = await db
       .from("item_addons")
-      .select("id, name, description, price, max_quantity, is_active")
+      .select("id, name, description, price, max_quantity, is_mandatory, is_active")
       .eq("item_id", itemId)
       .eq("is_active", true)
       .order("price");
@@ -592,7 +593,135 @@ const Item = {
       description: addon.description || null,
       price: addon.price.toFixed(2),
       max_quantity: addon.max_quantity,
+      is_mandatory: addon.is_mandatory || false,
     }));
+  },
+
+  // Create an add-on for an item
+  async createAddon(itemId, addonData) {
+    const { name, description, price, max_quantity = 1, is_mandatory = false } = addonData;
+
+    if (!name || price === undefined) {
+      return { error: "name and price are required" };
+    }
+
+    if (price < 0) {
+      return { error: "price cannot be negative" };
+    }
+
+    const { data, error } = await db
+      .from("item_addons")
+      .insert([
+        {
+          item_id: itemId,
+          name,
+          description,
+          price,
+          max_quantity,
+          is_mandatory,
+          is_active: true,
+        },
+      ])
+      .select()
+      .single();
+
+    if (error) return { error: error.message };
+
+    return {
+      data: {
+        id: data.id,
+        name: data.name,
+        description: data.description,
+        price: parseFloat(data.price).toFixed(2),
+        max_quantity: data.max_quantity,
+        is_mandatory: data.is_mandatory,
+      },
+    };
+  },
+
+  // Calculate price WITH add-ons
+  async calculatePriceWithAddons(itemId, requestParams = {}) {
+    // Get base price first
+    const baseCalculation = await this.calculatePrice(itemId, requestParams);
+    if (baseCalculation.error) return baseCalculation;
+
+    const selectedAddons = requestParams.addons || []; // Array of {id, quantity}
+
+    // Get mandatory add-ons
+    const { data: mandatoryAddons } = await db
+      .from("item_addons")
+      .select("*")
+      .eq("item_id", itemId)
+      .eq("is_mandatory", true)
+      .eq("is_active", true);
+
+    // Check if mandatory add-ons are included
+    if (mandatoryAddons && mandatoryAddons.length > 0) {
+      const selectedAddonIds = selectedAddons.map((a) => a.id);
+      const missingMandatory = mandatoryAddons.filter(
+        (addon) => !selectedAddonIds.includes(addon.id)
+      );
+
+      if (missingMandatory.length > 0) {
+        return {
+          error: "Missing mandatory add-ons",
+          mandatory_addons: missingMandatory.map((a) => ({
+            id: a.id,
+            name: a.name,
+            price: parseFloat(a.price).toFixed(2),
+          })),
+        };
+      }
+    }
+
+    if (selectedAddons.length === 0) {
+      return baseCalculation; // No add-ons selected
+    }
+
+    // Fetch add-on details
+    const addonIds = selectedAddons.map((a) => a.id);
+    const { data: addons } = await db
+      .from("item_addons")
+      .select("*")
+      .in("id", addonIds)
+      .eq("is_active", true);
+
+    let addonsTotal = 0;
+    const addonDetails = [];
+
+    for (const selectedAddon of selectedAddons) {
+      const addon = addons.find((a) => a.id === selectedAddon.id);
+      if (!addon) continue;
+
+      const quantity = Math.min(selectedAddon.quantity || 1, addon.max_quantity);
+      const addonPrice = parseFloat(addon.price) * quantity;
+      addonsTotal += addonPrice;
+
+      addonDetails.push({
+        id: addon.id,
+        name: addon.name,
+        is_mandatory: addon.is_mandatory,
+        quantity,
+        unit_price: parseFloat(addon.price).toFixed(2),
+        total_price: addonPrice.toFixed(2),
+      });
+    }
+
+    // Recalculate with add-ons
+    const newSubtotal = parseFloat(baseCalculation.subtotal) + addonsTotal;
+    const newTaxAmount = baseCalculation.tax_applicable
+      ? (newSubtotal * parseFloat(baseCalculation.tax_percentage)) / 100
+      : 0;
+    const newFinalPrice = newSubtotal + newTaxAmount;
+
+    return {
+      ...baseCalculation,
+      addons: addonDetails,
+      addons_total: addonsTotal.toFixed(2),
+      subtotal_with_addons: newSubtotal.toFixed(2),
+      tax_amount: newTaxAmount.toFixed(2),
+      final_price: newFinalPrice.toFixed(2),
+    };
   },
 
   async searchItems(params = {}) {
