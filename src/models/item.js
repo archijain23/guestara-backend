@@ -38,6 +38,17 @@ const Item = {
       };
     }
 
+    // Validate complimentary pricing rules
+    if (payload.pricing_type === "complimentary") {
+      if (payload.pricing_rules && payload.pricing_rules.base_price !== undefined) {
+        return {
+          error: {
+            message: "Complimentary items cannot have a base_price. They are always free.",
+          },
+        };
+      }
+    }
+
     const { data, error } = await db
       .from("items")
       .insert([payload])
@@ -73,6 +84,17 @@ const Item = {
         return {
           error: {
             message: `pricing_type must be one of: ${validTypes.join(", ")}`,
+          },
+        };
+      }
+    }
+
+    // Validate complimentary pricing rules
+    if (payload.pricing_type === "complimentary") {
+      if (payload.pricing_rules && payload.pricing_rules.base_price !== undefined) {
+        return {
+          error: {
+            message: "Complimentary items cannot have a base_price. They are always free.",
           },
         };
       }
@@ -221,6 +243,7 @@ const Item = {
         break;
 
       case "complimentary":
+        // Always free, ignore any base_price if present
         basePrice = 0;
         appliedRule = "complimentary (free)";
         break;
