@@ -2,6 +2,27 @@ const db = require("../config/db");
 
 const Item = {
   async create(payload) {
+    // Validate parent reference - item must belong to EITHER category OR subcategory
+    const hasCategory = payload.category_id != null;
+    const hasSubcategory = payload.subcategory_id != null;
+
+    if (hasCategory && hasSubcategory) {
+      return {
+        error: {
+          message: "Item cannot belong to both category and subcategory. Choose one.",
+        },
+      };
+    }
+
+    if (!hasCategory && !hasSubcategory) {
+      return {
+        error: {
+          message: "Item must belong to either a category or subcategory.",
+        },
+      };
+    }
+
+    // Validate pricing type
     const validTypes = [
       "static",
       "tiered",
@@ -26,6 +47,20 @@ const Item = {
   },
 
   async update(id, payload) {
+    // If updating parent reference, validate
+    if (payload.category_id !== undefined || payload.subcategory_id !== undefined) {
+      const hasCategory = payload.category_id != null;
+      const hasSubcategory = payload.subcategory_id != null;
+
+      if (hasCategory && hasSubcategory) {
+        return {
+          error: {
+            message: "Item cannot belong to both category and subcategory.",
+          },
+        };
+      }
+    }
+
     if (payload.pricing_type) {
       const validTypes = [
         "static",
@@ -69,7 +104,11 @@ const Item = {
       .range(from, to);
 
     if (subcategory_id) {
+      // Get items that belong to a specific subcategory
       query = query.eq("subcategory_id", subcategory_id);
+    } else if (category_id) {
+      // Get items that belong directly to a category (no subcategory)
+      query = query.eq("category_id", category_id).is("subcategory_id", null);
     }
 
     const { data: items, error } = await query;
@@ -82,67 +121,91 @@ const Item = {
       return { data: [], error: null };
     }
 
-    const subcategoryIds = [
-      ...new Set(items.map((item) => item.subcategory_id)),
-    ];
-
-    const { data: activeSubcategories } = await db
-      .from("subcategories")
-      .select("id, parent_id")
-      .eq("is_active", true)
-      .in("id", subcategoryIds);
-
-    if (!activeSubcategories || activeSubcategories.length === 0) {
-      return { data: [], error: null };
-    }
-
-    const activeSubcategoryIds = new Set(activeSubcategories.map((s) => s.id));
-    const categoryIds = [
-      ...new Set(activeSubcategories.map((s) => s.parent_id)),
-    ];
-
-    const { data: activeCategories } = await db
-      .from("categories")
-      .select("id")
-      .eq("is_active", true)
-      .in("id", categoryIds);
-
-    const activeCategoryIds = new Set(activeCategories?.map((c) => c.id) || []);
-
-    const validSubcategoryIds = new Set(
-      activeSubcategories
-        .filter((sub) => activeCategoryIds.has(sub.parent_id))
-        .map((sub) => sub.id)
+    // Filter items based on parent active status
+    const itemsWithSubcategory = items.filter((item) => item.subcategory_id);
+    const itemsWithCategory = items.filter(
+      (item) => item.category_id && !item.subcategory_id
     );
 
-    const filteredItems = items.filter((item) =>
-      validSubcategoryIds.has(item.subcategory_id)
-    );
+    let validItems = [];
 
-    if (category_id) {
-      const subcategoriesInCategory = activeSubcategories
-        .filter((sub) => sub.parent_id === category_id)
-        .map((sub) => sub.id);
+    // Check items with subcategory
+    if (itemsWithSubcategory.length > 0) {
+      const subcategoryIds = [
+        ...new Set(itemsWithSubcategory.map((item) => item.subcategory_id)),
+      ];
 
-      return {
-        data: filteredItems.filter((item) =>
-          subcategoriesInCategory.includes(item.subcategory_id)
-        ),
-        error: null,
-      };
+      const { data: activeSubcategories } = await db
+        .from("subcategories")
+        .select("id, parent_id")
+        .eq("is_active", true)
+        .in("id", subcategoryIds);
+
+      if (activeSubcategories && activeSubcategories.length > 0) {
+        const activeSubcategoryIds = new Set(
+          activeSubcategories.map((s) => s.id)
+        );
+        const categoryIds = [
+          ...new Set(activeSubcategories.map((s) => s.parent_id)),
+        ];
+
+        const { data: activeCategories } = await db
+          .from("categories")
+          .select("id")
+          .eq("is_active", true)
+          .in("id", categoryIds);
+
+        const activeCategoryIds = new Set(
+          activeCategories?.map((c) => c.id) || []
+        );
+
+        const validSubcategoryIds = new Set(
+          activeSubcategories
+            .filter((sub) => activeCategoryIds.has(sub.parent_id))
+            .map((sub) => sub.id)
+        );
+
+        validItems = validItems.concat(
+          itemsWithSubcategory.filter((item) =>
+            validSubcategoryIds.has(item.subcategory_id)
+          )
+        );
+      }
     }
 
-    return { data: filteredItems, error: null };
+    // Check items with direct category
+    if (itemsWithCategory.length > 0) {
+      const categoryIds = [
+        ...new Set(itemsWithCategory.map((item) => item.category_id)),
+      ];
+
+      const { data: activeCategories } = await db
+        .from("categories")
+        .select("id")
+        .eq("is_active", true)
+        .in("id", categoryIds);
+
+      const activeCategoryIds = new Set(
+        activeCategories?.map((c) => c.id) || []
+      );
+
+      validItems = validItems.concat(
+        itemsWithCategory.filter((item) =>
+          activeCategoryIds.has(item.category_id)
+        )
+      );
+    }
+
+    return { data: validItems, error: null };
   },
 
-  // ✅ COMPLETE: All 5 pricing types implemented
   async calculatePrice(itemId, requestParams = {}) {
     const { data: item } = await db
       .from("items")
       .select("*")
       .eq("id", itemId)
       .single();
-    
+
     if (!item) return { error: "Item not found" };
 
     const rules = item.pricing_rules || {};
@@ -151,9 +214,6 @@ const Item = {
     let discount = 0;
     let discountReason = null;
 
-    // ========================================
-    // PRICING TYPE LOGIC
-    // ========================================
     switch (item.pricing_type) {
       case "static":
         basePrice = parseFloat(rules.base_price || 0);
@@ -188,13 +248,12 @@ const Item = {
 
         if (discountType === "flat") {
           discount = discountValue;
-          discountReason = `Flat discount of ₹${discountValue}`;
+          discountReason = `Flat discount of Rs.${discountValue}`;
         } else if (discountType === "percentage") {
           discount = (basePrice * discountValue) / 100;
           discountReason = `${discountValue}% discount`;
         }
 
-        // Ensure discount never exceeds base price
         if (discount > basePrice) {
           discount = basePrice;
         }
@@ -204,15 +263,18 @@ const Item = {
       }
 
       case "dynamic": {
-        const currentTime = requestParams.current_time || 
-                           new Date().toTimeString().slice(0, 5);
+        const currentTime =
+          requestParams.current_time || new Date().toTimeString().slice(0, 5);
         basePrice = parseFloat(rules.base_price || 0);
 
         const timeWindows = rules.time_windows || [];
         let matchedWindow = null;
 
         for (const window of timeWindows) {
-          if (currentTime >= window.start_time && currentTime <= window.end_time) {
+          if (
+            currentTime >= window.start_time &&
+            currentTime <= window.end_time
+          ) {
             matchedWindow = window;
             break;
           }
@@ -235,12 +297,9 @@ const Item = {
         return { error: `Unknown pricing type: ${item.pricing_type}` };
     }
 
-    // ========================================
-    // TAX CALCULATION
-    // ========================================
     const tax = await this.getEffectiveTax(itemId);
     const subtotal = basePrice - discount;
-    
+
     let taxAmount = 0;
     if (tax.tax_applicable) {
       taxAmount = (subtotal * parseFloat(tax.tax_percentage)) / 100;
@@ -248,9 +307,6 @@ const Item = {
 
     const finalPrice = subtotal + taxAmount;
 
-    // ========================================
-    // RETURN BREAKDOWN
-    // ========================================
     return {
       item_id: itemId,
       item_name: item.name,
@@ -268,46 +324,69 @@ const Item = {
     };
   },
 
-  // ✅ Tax inheritance: subcategory → category
+  // Updated tax inheritance: handles both category and subcategory parents
   async getEffectiveTax(itemId) {
     const { data: item } = await db
       .from("items")
-      .select("subcategory_id")
+      .select("category_id, subcategory_id")
       .eq("id", itemId)
       .single();
 
     if (!item) return { tax_applicable: false, tax_percentage: 0 };
 
-    const { data: subcategory } = await db
-      .from("subcategories")
-      .select("parent_id, tax_applicable, tax_percentage")
-      .eq("id", item.subcategory_id)
-      .single();
+    // Case 1: Item belongs directly to a category
+    if (item.category_id && !item.subcategory_id) {
+      const { data: category } = await db
+        .from("categories")
+        .select("tax_applicable, tax_percentage")
+        .eq("id", item.category_id)
+        .single();
 
-    if (!subcategory) return { tax_applicable: false, tax_percentage: 0 };
+      if (category && category.tax_applicable) {
+        return {
+          tax_applicable: true,
+          tax_percentage: category.tax_percentage,
+          inherited_from: "category",
+        };
+      }
 
-    // If subcategory has tax defined, use it
-    if (subcategory.tax_applicable) {
-      return {
-        tax_applicable: true,
-        tax_percentage: subcategory.tax_percentage,
-        inherited_from: "subcategory",
-      };
+      return { tax_applicable: false, tax_percentage: 0 };
     }
 
-    // Otherwise, check category
-    const { data: category } = await db
-      .from("categories")
-      .select("tax_applicable, tax_percentage")
-      .eq("id", subcategory.parent_id)
-      .single();
+    // Case 2: Item belongs to a subcategory
+    if (item.subcategory_id) {
+      const { data: subcategory } = await db
+        .from("subcategories")
+        .select("parent_id, tax_applicable, tax_percentage")
+        .eq("id", item.subcategory_id)
+        .single();
 
-    if (category && category.tax_applicable) {
-      return {
-        tax_applicable: true,
-        tax_percentage: category.tax_percentage,
-        inherited_from: "category",
-      };
+      if (!subcategory)
+        return { tax_applicable: false, tax_percentage: 0 };
+
+      // If subcategory has tax defined, use it
+      if (subcategory.tax_applicable) {
+        return {
+          tax_applicable: true,
+          tax_percentage: subcategory.tax_percentage,
+          inherited_from: "subcategory",
+        };
+      }
+
+      // Otherwise, check parent category
+      const { data: category } = await db
+        .from("categories")
+        .select("tax_applicable, tax_percentage")
+        .eq("id", subcategory.parent_id)
+        .single();
+
+      if (category && category.tax_applicable) {
+        return {
+          tax_applicable: true,
+          tax_percentage: category.tax_percentage,
+          inherited_from: "category",
+        };
+      }
     }
 
     return { tax_applicable: false, tax_percentage: 0 };
@@ -382,6 +461,8 @@ const Item = {
 
     if (subcategory_id) {
       query = query.eq("subcategory_id", subcategory_id);
+    } else if (category_id) {
+      query = query.eq("category_id", category_id).is("subcategory_id", null);
     }
 
     const validSortFields = ["name", "created_at"];
@@ -400,56 +481,75 @@ const Item = {
     let filteredItems = items || [];
 
     if (filteredItems.length > 0) {
-      const subcategoryIds = [
-        ...new Set(filteredItems.map((item) => item.subcategory_id)),
-      ];
-
-      const { data: subcategories } = await db
-        .from("subcategories")
-        .select("id, parent_id, is_active")
-        .in("id", subcategoryIds);
-
-      const activeSubcategories =
-        subcategories?.filter((s) => s.is_active) || [];
-      const categoryIds = [
-        ...new Set(activeSubcategories.map((s) => s.parent_id)),
-      ];
-
-      const { data: categories } = await db
-        .from("categories")
-        .select("id, is_active")
-        .in("id", categoryIds);
-
-      const activeCategoryIds = new Set(
-        categories?.filter((c) => c.is_active).map((c) => c.id) || []
+      const itemsWithSubcategory = filteredItems.filter(
+        (item) => item.subcategory_id
+      );
+      const itemsWithCategory = filteredItems.filter(
+        (item) => item.category_id && !item.subcategory_id
       );
 
-      const validSubcategoryIds = new Set(
-        activeSubcategories
-          .filter((sub) => activeCategoryIds.has(sub.parent_id))
-          .map((sub) => sub.id)
-      );
+      let validItems = [];
 
-      filteredItems = filteredItems.filter((item) =>
-        validSubcategoryIds.has(item.subcategory_id)
-      );
-    }
+      if (itemsWithSubcategory.length > 0) {
+        const subcategoryIds = [
+          ...new Set(itemsWithSubcategory.map((item) => item.subcategory_id)),
+        ];
 
-    if (category_id && filteredItems.length > 0) {
-      const subcategoryIds = [
-        ...new Set(filteredItems.map((item) => item.subcategory_id)),
-      ];
+        const { data: subcategories } = await db
+          .from("subcategories")
+          .select("id, parent_id, is_active")
+          .in("id", subcategoryIds);
 
-      const { data: subcategories } = await db
-        .from("subcategories")
-        .select("id, parent_id")
-        .in("id", subcategoryIds)
-        .eq("parent_id", category_id);
+        const activeSubcategories =
+          subcategories?.filter((s) => s.is_active) || [];
+        const categoryIds = [
+          ...new Set(activeSubcategories.map((s) => s.parent_id)),
+        ];
 
-      const validSubIds = new Set(subcategories?.map((s) => s.id) || []);
-      filteredItems = filteredItems.filter((item) =>
-        validSubIds.has(item.subcategory_id)
-      );
+        const { data: categories } = await db
+          .from("categories")
+          .select("id, is_active")
+          .in("id", categoryIds);
+
+        const activeCategoryIds = new Set(
+          categories?.filter((c) => c.is_active).map((c) => c.id) || []
+        );
+
+        const validSubcategoryIds = new Set(
+          activeSubcategories
+            .filter((sub) => activeCategoryIds.has(sub.parent_id))
+            .map((sub) => sub.id)
+        );
+
+        validItems = validItems.concat(
+          itemsWithSubcategory.filter((item) =>
+            validSubcategoryIds.has(item.subcategory_id)
+          )
+        );
+      }
+
+      if (itemsWithCategory.length > 0) {
+        const categoryIds = [
+          ...new Set(itemsWithCategory.map((item) => item.category_id)),
+        ];
+
+        const { data: categories } = await db
+          .from("categories")
+          .select("id, is_active")
+          .in("id", categoryIds);
+
+        const activeCategoryIds = new Set(
+          categories?.filter((c) => c.is_active).map((c) => c.id) || []
+        );
+
+        validItems = validItems.concat(
+          itemsWithCategory.filter((item) =>
+            activeCategoryIds.has(item.category_id)
+          )
+        );
+      }
+
+      filteredItems = validItems;
     }
 
     if (min_price !== undefined || max_price !== undefined) {
@@ -472,7 +572,8 @@ const Item = {
       image: item.image,
       pricing_type: item.pricing_type,
       base_price: item.pricing_rules?.base_price || null,
-      subcategory_id: item.subcategory_id,
+      category_id: item.category_id || null,
+      subcategory_id: item.subcategory_id || null,
       is_active: item.is_active,
       created_at: item.created_at,
     }));
