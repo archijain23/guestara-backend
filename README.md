@@ -19,14 +19,14 @@ How This Thing Works
 Project Structure
 
 src/
-├── app.js              Main Express app with all the routes
-├── config/
-│   └── db.js          Supabase connection setup
-└── models/
-    ├── restaurant.js  Restaurant operations
-    ├── category.js    Category management
-    ├── subcategory.js Subcategory with tax stuff
-    └── item.js        Items with all the pricing magic
+  app.js - Main Express app with all the routes
+  config/
+    db.js - Supabase connection setup
+  models/
+    restaurant.js - Restaurant operations
+    category.js - Category management
+    subcategory.js - Subcategory with tax stuff
+    item.js - Items with all the pricing magic
 
 
 The Big Picture
