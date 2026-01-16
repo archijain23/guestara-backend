@@ -1,6 +1,6 @@
 # Guestara Restaurant Menu Backend
 
-A backend API for managing restaurant menus with flexible pricing, tax inheritance, and all the good stuff you'd expect from a modern menu system.
+A backend API for managing restaurant menus with flexible pricing, tax inheritance, booking system, add-ons, and all the good stuff you'd expect from a modern menu system.
 
 ## Table of Contents
 
@@ -8,6 +8,8 @@ A backend API for managing restaurant menus with flexible pricing, tax inheritan
 - [Database Design](#database-design)
 - [The Tax System](#the-tax-system)
 - [Pricing Engine](#pricing-engine)
+- [Add-ons System](#add-ons-system)
+- [Booking & Availability System](#booking--availability-system)
 - [Item Search & Filtering](#item-search--filtering)
 - [What I Didn't Build (And Why)](#what-i-didnt-build-and-why)
 - [Getting Started](#getting-started)
@@ -29,7 +31,7 @@ src/
     restaurant.js - Restaurant operations
     category.js - Category management
     subcategory.js - Subcategory with tax stuff
-    item.js - Items with all the pricing magic
+    item.js - Items with all the pricing magic, add-ons, and booking logic
 ```
 
 ### The Big Picture
@@ -37,7 +39,7 @@ src/
 I went with a model-based setup where each database table gets its own model file. Think of it like:
 
 - **Routes** handle HTTP stuff (requests, responses)
-- **Models** handle business logic (pricing, tax calculations, data validation)
+- **Models** handle business logic (pricing, tax calculations, data validation, add-ons, booking)
 
 The data flows in a **flexible hierarchy**:
 
@@ -115,11 +117,21 @@ Using JSONB means I don't need separate tables for each pricing type, and Postgr
 id, item_id, date, start_time, end_time, capacity, is_booked, created_at
 ```
 
+Supports bookable items like yoga classes, meeting rooms, or consultation slots. Each slot tracks:
+- **Date and time range** for the booking
+- **Capacity** for multi-person bookings
+- **is_booked** status to prevent double booking
+
 #### Item Add-ons - Extra stuff customers can add
 
 ```
-id, item_id, name, description, price, max_quantity, is_active, created_at
+id, item_id, name, description, price, max_quantity, is_mandatory, is_active, created_at
 ```
+
+Supports both **optional** (extra cheese, olives) and **mandatory** (choose your crust type) add-ons. Each add-on has:
+- **Price** that gets added to the item total
+- **max_quantity** to limit how many can be added
+- **is_mandatory** flag for required selections
 
 ### Design Choices Worth Mentioning
 
@@ -152,9 +164,10 @@ When you delete a menu item, you lose history. What if someone ordered it yester
 #### Why separate add-ons table?
 
 Originally thought about embedding add-ons in the items table, but a separate table means:
-- Multiple items can share the same add-on
+- Multiple items can share the same add-on (future feature)
 - Add-ons can be managed independently
 - Better database normalization
+- Easy to extend with add-on groups later
 
 #### Why JSONB for pricing?
 
@@ -357,6 +370,249 @@ The API returns a full breakdown:
 
 ---
 
+## Add-ons System
+
+Items can have add-ons that customers can select to customize their order. Think pizza toppings, coffee extras, or meal upgrades.
+
+### Use Cases
+
+**Pizza Restaurant:**
+- Extra Cheese +Rs.40 (optional)
+- Olives +Rs.30 (optional)
+- Stuffed Crust +Rs.80 (mandatory - choose your crust type)
+
+**Coffee Shop:**
+- Extra Shot +Rs.50 (optional, max 2)
+- Almond Milk +Rs.30 (optional)
+- Size Upgrade +Rs.40 (optional)
+
+**Consultation Service:**
+- Extended Session +Rs.500 (optional)
+- Report Copy +Rs.200 (mandatory)
+
+### How It Works
+
+#### Creating Add-ons
+
+Each add-on has:
+- **name** and **description**
+- **price** that gets added to the item total
+- **max_quantity** - limit how many can be added (e.g., max 2 extra shots)
+- **is_mandatory** - flag for required selections (e.g., must choose a crust type)
+
+```bash
+POST /items/{item-id}/addons
+{
+  "name": "Extra Cheese",
+  "description": "Additional mozzarella",
+  "price": 40,
+  "max_quantity": 2,
+  "is_mandatory": false
+}
+```
+
+#### Getting Add-ons
+
+```bash
+GET /items/{item-id}/addons
+```
+
+Returns all active add-ons for an item, showing which are mandatory.
+
+#### Price Calculation With Add-ons
+
+When calculating the final price, the system:
+
+1. **Validates mandatory add-ons** - Returns error if any are missing
+2. **Respects max_quantity** - Automatically caps quantities
+3. **Adds add-on prices** to the subtotal
+4. **Applies tax** on the new subtotal (base + add-ons)
+
+```bash
+POST /items/{item-id}/price-with-addons
+{
+  "addons": [
+    {"id": "addon-1-uuid", "quantity": 2},
+    {"id": "addon-2-uuid", "quantity": 1}
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "item_name": "Margherita Pizza",
+  "base_price": "400.00",
+  "addons": [
+    {
+      "name": "Extra Cheese",
+      "is_mandatory": false,
+      "quantity": 2,
+      "unit_price": "40.00",
+      "total_price": "80.00"
+    },
+    {
+      "name": "Olives",
+      "is_mandatory": false,
+      "quantity": 1,
+      "unit_price": "30.00",
+      "total_price": "30.00"
+    }
+  ],
+  "addons_total": "110.00",
+  "subtotal_with_addons": "510.00",
+  "tax_amount": "25.50",
+  "final_price": "535.50"
+}
+```
+
+### Design Decisions
+
+**Why is_mandatory?**  
+Some add-ons are choices customers must make (like crust type for pizza), while others are truly optional extras. The `is_mandatory` flag lets us enforce this at the API level.
+
+**Why max_quantity?**  
+Prevents abuse and matches real-world constraints (e.g., a coffee cup can only fit 2 extra shots).
+
+**Why separate table?**  
+- Clean data model
+- Easy to query all add-ons for an item
+- Could extend to add-on groups later ("Choose 1 of 3 sauces")
+- Multiple items could share add-ons in the future
+
+---
+
+## Booking & Availability System
+
+Some items are bookable - customers need to reserve a specific time slot. Think yoga classes, meeting rooms, consultation slots, or private dining.
+
+### Use Cases
+
+**Yoga Studio:**
+- Morning Yoga Class
+- Available: Mon-Fri, 8:00-9:00
+- Capacity: 10 people
+
+**Co-working Space:**
+- Meeting Room
+- Available: Multiple time slots daily
+- Capacity: 1 booking per slot
+
+**Restaurant:**
+- Private Dining Room
+- Available: Evenings, 18:00-22:00
+- Capacity: 5 tables
+
+### How It Works
+
+#### Creating Availability Slots
+
+For each bookable item, create time slots:
+
+```bash
+POST /items/{item-id}/availability
+{
+  "date": "2026-01-20",
+  "start_time": "10:00",
+  "end_time": "11:00",
+  "capacity": 10
+}
+```
+
+The system:
+- **Validates time format** (HH:MM)
+- **Checks for conflicts** - Prevents overlapping slots
+- **Returns error** if slot conflicts with existing bookings
+
+#### Checking Available Slots
+
+```bash
+GET /items/{item-id}/availability?date=2026-01-20
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "slot-uuid",
+    "date": "2026-01-20",
+    "slot": "10:00-11:00",
+    "available": true,
+    "capacity_left": 10
+  },
+  {
+    "id": "slot-uuid-2",
+    "date": "2026-01-20",
+    "slot": "14:00-15:00",
+    "available": false,
+    "capacity_left": 0
+  }
+]
+```
+
+#### Booking a Slot
+
+```bash
+POST /slots/{slot-id}/book
+```
+
+The system:
+1. **Checks if slot exists and is available**
+2. **Prevents double booking** - Returns error if already booked
+3. **Reduces capacity** when booked
+4. **Sets is_booked = true** when capacity reaches 0
+
+**Success Response:**
+```json
+{
+  "success": true,
+  "booking": {
+    "slot_id": "abc123",
+    "date": "2026-01-20",
+    "time": "10:00-11:00",
+    "status": "booked",
+    "capacity_left": 9
+  }
+}
+```
+
+**Error Response (already booked):**
+```json
+{
+  "error": "This slot is already booked",
+  "slot": {
+    "id": "abc123",
+    "date": "2026-01-20",
+    "time": "10:00-11:00",
+    "status": "booked"
+  }
+}
+```
+
+### Design Decisions
+
+**Why capacity instead of just is_booked?**  
+Some items can handle multiple bookings (like yoga classes with 10 spots). Capacity tracking lets us support both single-booking items (capacity=1) and multi-booking items.
+
+**Why check time conflicts?**  
+Prevents accidental overlapping slots that would confuse customers and staff.
+
+**Why separate slots table?**  
+- Items are optional bookable (most menu items aren't bookable)
+- Clean separation of concerns
+- Easy to query availability without loading item details
+- Could extend with recurring slots, waitlists, etc.
+
+**What's simplified:**  
+- No user authentication (who made the booking)
+- No cancellation logic
+- No waitlist support
+- No recurring slots
+
+These would be added in a production system but weren't core to demonstrating the concept.
+
+---
+
 ## Item Search & Filtering
 
 The search endpoint supports comprehensive filtering as required by the assignment. All filters can be combined for complex queries.
@@ -526,8 +782,8 @@ The `tax_applicable` filter checks each item's inherited tax status by querying 
 ✅ Flexible item parents (category OR subcategory) as per assignment spec  
 ✅ **Comprehensive search with 5 filters** (text, price, category, active, tax)  
 ✅ Pagination on list endpoints  
-✅ Availability checking  
-✅ Add-ons system  
+✅ **Complete booking system** with availability slots, conflict detection, double-booking prevention  
+✅ **Complete add-ons system** with optional/mandatory support and price calculation  
 ✅ Active/inactive management  
 
 ### What I Skipped
@@ -547,8 +803,16 @@ Right now, if you create an item with add-ons, they're separate database calls. 
 #### Basic error handling
 Errors are just `{ error: "message" }`. A real API would have error codes, detailed messages, and proper HTTP status codes.
 
-#### Simplified availability
-The availability system tracks slots but doesn't handle actual booking logic, conflict resolution, or waitlists. Just wanted to show the concept.
+#### Simplified booking
+The availability system tracks slots and prevents double booking, but doesn't handle:
+- User tracking (who made the booking)
+- Cancellations and refunds
+- Waitlists
+- Recurring slots
+- Email notifications
+
+#### No add-on groups (Bonus feature)
+The assignment mentioned "Choose 1 of 3 sauces" as a bonus. I structured the database to support this later (could add an `addon_groups` table), but didn't implement the full feature to stay focused on core requirements.
 
 #### No read replicas or connection pooling
 Single database instance. At high traffic, you'd want read replicas for GET requests and proper connection pooling.
@@ -557,7 +821,7 @@ Single database instance. At high traffic, you'd want read replicas for GET requ
 
 The assignment was about demonstrating:
 - Clean architecture
-- Complex business logic (pricing, taxes)
+- Complex business logic (pricing, taxes, bookings, add-ons)
 - Data modeling skills
 - Clear thinking
 
@@ -674,6 +938,7 @@ CREATE TABLE item_addons (
   description TEXT,
   price DECIMAL(10,2) NOT NULL,
   max_quantity INTEGER DEFAULT 1,
+  is_mandatory BOOLEAN DEFAULT false,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -681,6 +946,8 @@ CREATE TABLE item_addons (
 -- Add indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_items_category_id ON items(category_id);
 CREATE INDEX IF NOT EXISTS idx_items_subcategory_id ON items(subcategory_id);
+CREATE INDEX IF NOT EXISTS idx_availability_slots_item_id ON availability_slots(item_id);
+CREATE INDEX IF NOT EXISTS idx_item_addons_item_id ON item_addons(item_id);
 ```
 
 #### 5. Start the server
@@ -788,19 +1055,71 @@ curl http://localhost:3000/items/{item-id}/price?duration_hours=3
 curl http://localhost:3000/items/{item-id}/tax
 ```
 
+### Booking System
+
+#### Create availability slot
+
+```bash
+curl -X POST http://localhost:3000/items/{item-id}/availability \
+  -H "Content-Type: application/json" \
+  -d '{
+    "date": "2026-01-20",
+    "start_time": "10:00",
+    "end_time": "11:00",
+    "capacity": 10
+  }'
+```
+
 #### Check availability
 
 ```bash
-curl http://localhost:3000/items/{item-id}/availability?date=2026-01-20
+curl "http://localhost:3000/items/{item-id}/availability?date=2026-01-20"
 ```
 
-#### Get add-ons
+#### Book a slot
+
+```bash
+curl -X POST http://localhost:3000/slots/{slot-id}/book
+```
+
+### Add-ons System
+
+#### Get add-ons for an item
 
 ```bash
 curl http://localhost:3000/items/{item-id}/addons
 ```
 
-#### Search items (see [Item Search & Filtering](#item-search--filtering) for details)
+#### Create an add-on
+
+```bash
+curl -X POST http://localhost:3000/items/{item-id}/addons \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Extra Cheese",
+    "description": "Additional mozzarella",
+    "price": 40,
+    "max_quantity": 2,
+    "is_mandatory": false
+  }'
+```
+
+#### Calculate price with add-ons
+
+```bash
+curl -X POST http://localhost:3000/items/{item-id}/price-with-addons \
+  -H "Content-Type: application/json" \
+  -d '{
+    "addons": [
+      {"id": "addon-1-uuid", "quantity": 2},
+      {"id": "addon-2-uuid", "quantity": 1}
+    ]
+  }'
+```
+
+### Search & Filter
+
+#### Search items
 
 ```bash
 # Basic search
@@ -897,6 +1216,8 @@ Zero tests right now. I'd add:
 - Integration tests for tax inheritance with both parent types
 - API tests with Supertest
 - Test cases for all search filter combinations
+- Test cases for booking conflicts and double-booking prevention
+- Test cases for mandatory add-ons validation
 - Property-based testing for pricing calculations
 
 #### Better query optimization
@@ -926,6 +1247,20 @@ Right now it's scattered. I'd add Zod schemas for each endpoint and centralize v
 #### API documentation
 Generate Swagger/OpenAPI docs automatically so frontend devs can see what's available.
 
+#### Enhanced booking system
+Add:
+- User tracking (who made the booking)
+- Cancellation and refund logic
+- Waitlist support
+- Recurring slots (weekly yoga classes)
+- Email/SMS notifications
+
+#### Add-on groups (Bonus feature)
+Implement "Choose 1 of 3 sauces" functionality with:
+- `addon_groups` table
+- Group selection constraints (min/max selections)
+- UI-friendly grouping in API responses
+
 #### Audit logging
 Track who changed what and when. Especially important for price changes.
 
@@ -951,6 +1286,8 @@ This was a fun project. The core challenge wasn't building CRUD endpoints—it w
 - Multiple pricing models without turning into spaghetti code
 - Tax inheritance that actually makes sense
 - Flexible item organization (category OR subcategory parents per assignment spec)
+- Bookable items with conflict detection and double-booking prevention
+- Add-ons with mandatory/optional support and price calculation
 - Comprehensive search with multiple combinable filters
 - A flexible schema that can evolve without breaking things
 
