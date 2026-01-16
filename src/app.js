@@ -104,6 +104,15 @@ app.get("/items/:id/price", async (req, res) => {
   if (result.error) return res.status(404).json({ error: result.error });
   res.json(result);
 });
+
+// Create availability slot
+app.post("/items/:id/availability", async (req, res) => {
+  const result = await Item.createAvailabilitySlot(req.params.id, req.body);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.status(201).json(result.data);
+});
+
+// Get available slots
 app.get("/items/:id/availability", async (req, res) => {
   const date = req.query.date || null;
   const result = await Item.getAvailability(req.params.id, date);
@@ -111,6 +120,14 @@ app.get("/items/:id/availability", async (req, res) => {
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
 });
+
+// Book a slot
+app.post("/slots/:slot_id/book", async (req, res) => {
+  const result = await Item.bookSlot(req.params.slot_id);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
+
 app.get("/items/:id/addons", async (req, res) => {
   const result = await Item.getAddons(req.params.id);
   if (result.error) return res.status(400).json({ error: result.error });
