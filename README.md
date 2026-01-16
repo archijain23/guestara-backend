@@ -8,6 +8,7 @@ A backend API for managing restaurant menus with flexible pricing, tax inheritan
 - [Database Design](#database-design)
 - [The Tax System](#the-tax-system)
 - [Pricing Engine](#pricing-engine)
+- [Item Search & Filtering](#item-search--filtering)
 - [What I Didn't Build (And Why)](#what-i-didnt-build-and-why)
 - [Getting Started](#getting-started)
 - [API Endpoints](#api-endpoints)
@@ -356,6 +357,165 @@ The API returns a full breakdown:
 
 ---
 
+## Item Search & Filtering
+
+The search endpoint supports comprehensive filtering as required by the assignment. All filters can be combined for complex queries.
+
+### Available Filters
+
+#### 1. Partial Text Search
+**Parameter:** `search`  
+**What it does:** Case-insensitive search across item names and descriptions
+
+```bash
+# Find all items with "pizza" in name or description
+curl "http://localhost:3000/items/search?search=pizza"
+
+# Search for "coffee"
+curl "http://localhost:3000/items/search?search=coffee"
+```
+
+#### 2. Price Range Filter
+**Parameters:** `min_price`, `max_price`  
+**What it does:** Filter items by their base price
+
+```bash
+# Items under Rs.100
+curl "http://localhost:3000/items/search?max_price=100"
+
+# Items between Rs.200-300
+curl "http://localhost:3000/items/search?min_price=200&max_price=300"
+
+# Items above Rs.400
+curl "http://localhost:3000/items/search?min_price=400"
+```
+
+#### 3. Category Filter
+**Parameter:** `category_id`  
+**What it does:** Get items that belong directly to a specific category (no subcategory)
+
+```bash
+# Items directly under a category
+curl "http://localhost:3000/items/search?category_id=your-category-uuid"
+```
+
+**Alternative:** `subcategory_id` to get items under a specific subcategory
+
+```bash
+# Items under a subcategory
+curl "http://localhost:3000/items/search?subcategory_id=your-subcategory-uuid"
+```
+
+#### 4. Active Only Filter
+**Parameter:** `active_only` (default: `true`)  
+**What it does:** Show only active items or include inactive ones
+
+```bash
+# Only active items (default)
+curl "http://localhost:3000/items/search?active_only=true"
+
+# Include inactive items
+curl "http://localhost:3000/items/search?active_only=false"
+```
+
+#### 5. Tax Applicable Filter
+**Parameter:** `tax_applicable`  
+**What it does:** Filter items by whether they have tax or not (checks tax inheritance)
+
+```bash
+# Only items with tax
+curl "http://localhost:3000/items/search?tax_applicable=true"
+
+# Only items without tax
+curl "http://localhost:3000/items/search?tax_applicable=false"
+```
+
+### Combining Filters
+
+All filters work together. The system applies them in this order:
+1. Active status check
+2. Text search (name/description)
+3. Category/subcategory filter
+4. Parent active status validation
+5. Price range filter
+6. Tax applicable filter
+7. Sorting and pagination
+
+**Example combinations:**
+
+```bash
+# Search + Price Range
+curl "http://localhost:3000/items/search?search=pizza&min_price=400&max_price=500"
+
+# Search + Tax Filter
+curl "http://localhost:3000/items/search?search=coffee&tax_applicable=true"
+
+# Price Range + Tax Filter
+curl "http://localhost:3000/items/search?min_price=100&tax_applicable=false"
+
+# Everything together
+curl "http://localhost:3000/items/search?search=cappuccino&min_price=200&max_price=300&tax_applicable=true&active_only=true"
+```
+
+### Sorting and Pagination
+
+**Sorting:**
+- `sort_by`: Field to sort by (`name` or `created_at`, default: `name`)
+- `sort_order`: Sort direction (`asc` or `desc`, default: `asc`)
+
+**Pagination:**
+- `page`: Page number (default: `1`)
+- `limit`: Items per page (default: `10`)
+
+```bash
+# Sort by name descending, 5 items per page
+curl "http://localhost:3000/items/search?sort_by=name&sort_order=desc&limit=5&page=1"
+
+# Sort by creation date, newest first
+curl "http://localhost:3000/items/search?sort_by=created_at&sort_order=desc"
+```
+
+### Response Format
+
+```json
+{
+  "data": [
+    {
+      "id": "item-uuid",
+      "name": "Cappuccino",
+      "description": "Classic Italian coffee",
+      "image": null,
+      "pricing_type": "static",
+      "base_price": 250,
+      "category_id": null,
+      "subcategory_id": "subcategory-uuid",
+      "is_active": true,
+      "created_at": "2026-01-14T09:25:24.467506+00:00"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "total": 4,
+    "has_more": false
+  }
+}
+```
+
+### Implementation Notes
+
+**Why pagination happens after filtering:**
+
+Initially, the search had a bug where database pagination happened before tax filtering. This meant if you had 100 items but the database only returned the first 10 (due to pagination), and then filtered by tax, you'd miss items on later pages that matched the tax filter.
+
+The fix: Fetch all matching items first, apply ALL filters (including tax which requires checking inheritance), then paginate the final results. This ensures accurate filtering at the cost of slightly more database queries when using the tax filter.
+
+**Tax filter performance:**
+
+The `tax_applicable` filter checks each item's inherited tax status by querying parent categories/subcategories. For large datasets, this could be optimized with database JOINs or caching, but for the assignment scope, the current approach prioritizes correctness and code clarity.
+
+---
+
 ## What I Didn't Build (And Why)
 
 ### What's In There
@@ -364,10 +524,10 @@ The API returns a full breakdown:
 ✅ All 5 pricing types working  
 ✅ Tax inheritance with proper fallback  
 ✅ Flexible item parents (category OR subcategory) as per assignment spec  
+✅ **Comprehensive search with 5 filters** (text, price, category, active, tax)  
 ✅ Pagination on list endpoints  
 ✅ Availability checking  
 ✅ Add-ons system  
-✅ Search with filters  
 ✅ Active/inactive management  
 
 ### What I Skipped
@@ -640,10 +800,17 @@ curl http://localhost:3000/items/{item-id}/availability?date=2026-01-20
 curl http://localhost:3000/items/{item-id}/addons
 ```
 
-#### Search items
+#### Search items (see [Item Search & Filtering](#item-search--filtering) for details)
 
 ```bash
-curl "http://localhost:3000/items/search?search=coffee&min_price=100&max_price=500"
+# Basic search
+curl "http://localhost:3000/items/search?search=coffee"
+
+# With filters
+curl "http://localhost:3000/items/search?search=pizza&min_price=400&tax_applicable=true"
+
+# All filters combined
+curl "http://localhost:3000/items/search?search=coffee&min_price=100&max_price=500&tax_applicable=true&active_only=true&sort_by=name&sort_order=asc&page=1&limit=10"
 ```
 
 #### List items by category
@@ -706,18 +873,21 @@ Both database constraints and application-level validation are needed for good d
 
 ### Hardest Challenge
 
-#### Making dynamic pricing actually useful
+#### Making the search filter work correctly with tax inheritance
 
-The assignment said "implement dynamic pricing" but left the details vague (intentionally, I think). I had to decide:
+The trickiest bug to fix was the `tax_applicable` filter. Initially, I applied database pagination before filtering by tax status. This caused a subtle bug:
 
-- What if time windows overlap? (decided: first match wins)
-- What if current time doesn't match any window? (decided: return error, don't silently use base price)
-- How to handle timezone differences? (decided: assume everything is local time, HH:MM format)
-- Should windows cross midnight? (decided: yes, but didn't fully implement)
+1. Database returns first 10 items (paginated)
+2. Check tax status for those 10 items
+3. Filter by tax
+4. **Problem:** Items on page 2+ that matched the tax filter were never seen
 
-The hard part wasn't the code—it was making design decisions without clear requirements. I ended up choosing the simplest approach that would be extensible later (storing time windows as an array means I can add day-of-week or date-specific pricing without schema changes).
+The fix required restructuring the search flow:
+1. Fetch all matching items (no pagination yet)
+2. Apply all filters including tax (which requires inheritance checks)
+3. Paginate the filtered results
 
-**What I learned:** When specs are ambiguous, pick something reasonable, document your assumptions, and design for future changes.
+This taught me that **filter order matters** when combining database queries with application-level logic. The tax filter needs inheritance checks (application logic), so it must happen before pagination to ensure correctness.
 
 ### What I'd Improve With More Time
 
@@ -726,10 +896,13 @@ Zero tests right now. I'd add:
 - Unit tests for each pricing type (especially edge cases like midnight crossovers)
 - Integration tests for tax inheritance with both parent types
 - API tests with Supertest
+- Test cases for all search filter combinations
 - Property-based testing for pricing calculations
 
 #### Better query optimization
 The `list()` methods have N+1 queries when checking parent active status. I'd rewrite those with proper JOINs and add database indexes on foreign keys and `is_active` columns.
+
+The `tax_applicable` filter currently checks each item's tax individually. For large datasets, this could be optimized with a single JOIN query.
 
 #### Transaction support
 Right now, creating an item with add-ons is two separate database calls. If one fails, you get partial data. I'd wrap these in transactions.
@@ -778,6 +951,7 @@ This was a fun project. The core challenge wasn't building CRUD endpoints—it w
 - Multiple pricing models without turning into spaghetti code
 - Tax inheritance that actually makes sense
 - Flexible item organization (category OR subcategory parents per assignment spec)
+- Comprehensive search with multiple combinable filters
 - A flexible schema that can evolve without breaking things
 
 I tried to balance "good enough to demonstrate thinking" with "not over-engineered." Hope this README shows that I can both write code and explain why I made the choices I did.
